@@ -20,16 +20,120 @@
  * Transmit: [gps1][gps2][adc][relay state][imu]
  * Receive:  [relay time commands]
  */
-#include "main.h"
+#include "common.h"
+
+// Set up all the peripheral devices
+SPISlave_T4 mySPI(0, SPI_8_BITS);
+File dataFile;
+Adafruit_MCP23X17 RelayDriver;  // MCP Object, Uses I2C0, pin 18/19 for SDA/SCL
+IMU380 imu(SPI1, 0);
+CD74HC4067 adc_mux(3, 4, 5, 6);
+TinyGPSPlus gps1;
+TinyGPSPlus gps2;
+
+// Global Telemetry Structs
+spi_data_t    spi_data;
+spi_command_t spi_command;
+customMessageUnion spi_data_union;
+customMessageUnionFC spi_command_union;
+
 
 // Cycle time, debug flag, and number of cycles for the main loop
-unsigned long start = 0;
 unsigned int  n_cycles_main = 50;
 uint32_t      error_flag = 0;
 bool          init_relay_states = 1;
 bool          SD_card_valid = 1;
 bool          time_to_write = 1;
 uint32_t      cycle_counter = 0;
+const int     debug_mode =  1;
+uint32_t      _new_fcrx = 0;
+uint8_t  fc_rx_buffer[sizeof(spi_command_t)];
+uint8_t  fc_tx_buffer[sizeof(spi_data_t)];
+uint8_t  _relay_commands[N_COUNT];
+int      _relay_timers[N_COUNT];
+uint16_t _gyro_status;
+float _imu_omega[3];
+float _imu_accel[3];
+
+// TODO make one large string, then print that?
+// TODO STRING WITH LARGER PRECISION!
+void print_data_to_sd()
+{
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.flags[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.num_sats[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.hdop[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.lat[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.lng[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.age[i]) + ",");
+  for (size_t i = 0; i < sizeof(spi_data.date1); i++)
+    dataFile.print(String(spi_data.date1[i]));
+  dataFile.print(",");
+  for (size_t i = 0; i < sizeof(spi_data.time1); i++)
+    dataFile.print(String(spi_data.time1[i]));
+  dataFile.print(",");
+  for (size_t i = 0; i < sizeof(spi_data.date2); i++)
+    dataFile.print(String(spi_data.date2[i]));
+  dataFile.print(",");
+  for (size_t i = 0; i < sizeof(spi_data.time2); i++)
+    dataFile.print(String(spi_data.time2[i]));
+  dataFile.print(",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.altitude_m[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.speed_mps[i]) + ",");
+  for (size_t i = 0; i < 2; i++) dataFile.print(String(spi_data.failedChecksum[i]) + ",");
+  for (size_t i = 0; i < 3; i++) dataFile.print(String(spi_data.imu_w[i]) + ",");
+  for (size_t i = 0; i < 3; i++) dataFile.print(String(spi_data.imu_a[i]) + ",");
+  dataFile.print(String(spi_data.imu_temp) + ",");
+  for (size_t i = 0; i < 16; i++) dataFile.print(String(spi_data.relay_states[i]) + ",");
+  for (size_t i = 0; i < 16; i++) dataFile.print(String(spi_data.adc[i]) + ",");
+  dataFile.print(String(spi_data.counter) + ',');
+  dataFile.println(String(spi_data.checksum));
+}
+
+// SPI Function 
+// TODO: DO THIS CORRECTLY!
+void flight_computer_spi()
+{
+  while( mySPI.available())
+  {
+    uint32_t startbyte = mySPI.popr();
+    // If the incoming packet is a relay command packet
+    if(startbyte == 0x69){
+      // Pack spi_command
+      for (size_t i = 0; i < sizeof(b_r); i++)
+        spi_command_union.bytes[i] = fc_rx_buffer[i];
+      spi_command = spi_command_union.message;
+    }
+    if(startbyte == 0x42){
+      // Push out each of the bytes in spi_data
+      spi_data_union.message = spi_data;
+      mySPI.pushr(spi_data_union.bytes[]);
+    }
+  }
+}
+
+/* 
+ * This custom version of delay() ensures that the gps object
+ * is being "fed".
+*/
+void smartDelayGPS1(unsigned long ms)
+{
+  unsigned long start = millis();
+  do 
+  {
+    while (GPS1.available())
+      gps1.encode(GPS1.read());
+  } while (millis() - start < ms);
+}
+
+void smartDelayGPS2(unsigned long ms)
+{
+  unsigned long start = millis();
+  do 
+  {
+    while (GPS2.available())
+      gps2.encode(GPS2.read());
+  } while (millis() - start < ms);
+}
 
 void setup()
 {
@@ -39,6 +143,7 @@ void setup()
   
   // Debug Serial Port and Configure GPS Serial
   Serial.begin(115200);
+  while (!Serial);
   GPS1.begin(GPSBaud);
   GPS2.begin(GPSBaud);
   Serial.println("GPS Serial Ports Opened.");
@@ -61,9 +166,9 @@ void setup()
   // Make sure Flight Computer is Chatting over SPI
   // NEW SPI_MSTransfer library does not return anything
   // fc_spi.begin();
-  Serial.println("FC SPI Line Opened.");
-  // if(debug_mode) {fc_spi.onTransfer(myCB_debug);}
-  // else{ fc_spi.onTransfer(myCB);}
+  mySPI.onReceive(flight_computer_spi);
+  mySPI.begin();
+  mySPI.swapPins();
   Serial.println("FC SPI Line Opened.");
 
   // Configure the IMU with the following (TBD!)
@@ -121,7 +226,6 @@ void setup()
   } 
 
   Serial.println("Finished Device Setup.");
-  digitalWrite(13, HIGH);
 }
 
 
@@ -136,13 +240,14 @@ void flight_loop(){
    * only update the timers in the case we get an updated packet from FC 
    * this should be every 250ms or so.
    */
-  if(_new_fcrx){
-    populate_fc_rx_data();
-    for (uint8_t i = 0; i < N_COUNT; i++){
-      _relay_timers[i]   = spi_command.relay_times_desired_ms[i];
-      _relay_commands[i] = spi_command.relay_states_desired[i];
-    }
-  }
+  // if(_new_fcrx){
+  //   populate_fc_rx_data();
+  //   // kyle: fire interrupts for triggering valves
+  //   for (uint8_t i = 0; i < N_COUNT; i++){
+  //     _relay_timers[i]   = spi_command.relay_times_desired_ms[i];
+  //     _relay_commands[i] = spi_command.relay_states_desired[i];
+  //   }
+  // }
 
   /* Now activate relays based on those commands. 
    * _relay_commands is a little redundant but offers extra masking 
@@ -192,7 +297,7 @@ void flight_loop(){
   }
 
   // Populate the telemetry struct with GPS1 and GPS2 data
-  gps_populate_telem_struct();
+  gps_populate_telem_struct(spi_data, gps1, gps2);
   // tx_data_to_fc(spi_data);
 
   // Store the data on the SD card possibly at lower rate?
@@ -204,10 +309,10 @@ void flight_loop(){
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // DEBUG THE FLIGHT ROUTINE, RUN SLOWER
-void debug_loop(){
+void debug_loop()
+{
   // Make the main loop much slower
   n_cycles_main = 1000;
-  time_to_write = 1;
 
   /*
    * PRINT OUT A BUNCH OF SHIT
@@ -241,46 +346,35 @@ void debug_loop(){
   /* RUN THE MAIN LOOP, BUT SET UP SOME INITIAL CONDITIONS ETC
    * 
    */
-
-  // for (uint8_t i = 0; i < N_COUNT; i++){
-  //   RelayDriver.digitalWrite(i, HIGH);
-  // }
-
   unsigned long start_flight = millis();
   if(cycle_counter%5 == 0) _relay_timers[5] = 2000;
   _relay_commands[5] = 1;
   
-
   flight_loop();
   Serial.print("Flight Loop takes this long to run (ms): ");
   Serial.println(millis() - start_flight);
-
-  digitalWrite(13, HIGH);
 }
 
 
 void loop()
 {
-  // Populate Ring Buffer from FC
-  // _new_fcrx = fc_spi.events();
+  // Loop time counter
+  uint32_t tstart = 0;
 
   // Execution Loop
-  if (millis() - start >= n_cycles_main )
+  if (millis() - tstart >= n_cycles_main )
   {
     // Reset Timer
-    start = millis();
+    tstart = millis();
     cycle_counter++;
     spi_data.counter = cycle_counter;
 
     // Write to SD card every other cycle.
     if(cycle_counter%2 == 0) time_to_write = 1;
 
-    // Do the thing.
-    if (debug_mode){
-      time_to_write = 1;
-      debug_loop();
-    }
-    else{
+    // FLIGHT LOOP CODE
+    if (!debug_mode)
+    {
       /* 
        * Give Each GPS time to update a packet if a new solution is found
        * They update at ~171ms interval anyway. Updates dont happen when Age is 0 btw.
@@ -288,6 +382,11 @@ void loop()
       flight_loop();
       smartDelayGPS1(10);
       smartDelayGPS2(10);
+    }
+    else{
+      // Debug, write to SD card each time.
+      time_to_write = 1;
+      debug_loop();
     }    
   }
 

@@ -9,11 +9,9 @@
 // MCP23017 Hardware Address, all pins grounded
 #define MCP_ADDR      (0x40)
 
-// Configure the first SPI port as the serial line to FC
-// #define fc_spi SPI
-
 // Teensy Side RX and TX pins for each of these ports
 const uint32_t GPSBaud = 38400;
+const int SD_cs = BUILTIN_SDCARD; 
 
 // Define all the relay attachment pins
 // See this for pin mappings: https://github.com/adafruit/Adafruit-MCP23017-Arduino-Library
@@ -33,3 +31,8 @@ const uint32_t GPSBaud = 38400;
 #define RELAY14_PIN 13
 #define RELAY15_PIN 14
 #define RELAY16_PIN 15
+
+#define FLIGHT_COMPUTER_CS 10
+#define N_COUNT 16
+#define adc_common_input A10
+#define adc_enable 2
