@@ -54,6 +54,11 @@ int      _relay_timers[N_COUNT];
 uint16_t _gyro_status;
 float _imu_omega[3];
 float _imu_accel[3];
+int spi_telem_mode = 0;
+const int rx_packet_idx_max = sizeof(b_r);
+int rx_packet_idx = 0;
+const int tx_packet_idx_max = sizeof(b_s);
+int tx_packet_idx = 0;
 
 // TODO make one large string, then print that?
 // TODO STRING WITH LARGER PRECISION!
@@ -96,17 +101,42 @@ void flight_computer_spi()
   while( mySPI.available())
   {
     uint32_t startbyte = mySPI.popr();
-    // If the incoming packet is a relay command packet
-    if(startbyte == 0x69){
-      // Pack spi_command
-      for (size_t i = 0; i < sizeof(b_r); i++)
-        spi_command_union.bytes[i] = fc_rx_buffer[i];
-      spi_command = spi_command_union.message;
+
+    // If we are just beginning a transfer
+    if(spi_telem_mode == 0 && startbyte == 0x69){
+      // Command Packet
+      spi_telem_mode = 1;
+      rx_packet_idx = 0;
     }
-    if(startbyte == 0x42){
-      // Push out each of the bytes in spi_data
-      spi_data_union.message = spi_data;
-      mySPI.pushr(spi_data_union.bytes[]);
+    else if (spi_telem_mode == 0 && startbyte == 0x42){
+      // Telem Request Packet
+      spi_telem_mode = 2;
+      tx_packet_idx  = 0;
+    }
+
+    // If the incoming packet is a relay command packet
+    if(spi_telem_mode == 1){
+      // Pack spi_command
+      spi_command_union.bytes[rx_packet_idx] = startbyte;
+      rx_packet_idx ++;
+
+      if(rx_packet_idx == rx_packet_idx_max){
+        spi_command = spi_command_union.message;
+        spi_telem_mode = 0;
+        rx_packet_idx = 0;
+      }
+    }
+    // If we've requested telemetry. Not sure if this is right....
+    if(spi_telem_mode == 2){
+      // Push out telemetry byte by byte
+      mySPI.pushr(spi_data_union.bytes[tx_packet_idx]);
+      tx_packet_idx ++;
+
+      // If we have transmitted out all the packets then we're done!
+      if(tx_packet_idx == tx_packet_idx_max){
+        spi_telem_mode = 0;
+        tx_packet_idx = 0;
+      }
     }
   }
 }
@@ -299,6 +329,9 @@ void flight_loop(){
   // Populate the telemetry struct with GPS1 and GPS2 data
   gps_populate_telem_struct(spi_data, gps1, gps2);
   // tx_data_to_fc(spi_data);
+
+  // Pack the data union
+  spi_data_union.message = spi_data;
 
   // Store the data on the SD card possibly at lower rate?
   if (SD_card_valid && time_to_write) {
