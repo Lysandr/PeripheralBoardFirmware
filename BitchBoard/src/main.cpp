@@ -1,28 +1,13 @@
 /* Padraig Lysandrou April 2022
  * "Everything Else Board" or "Bitchboard" Firmware
- * Devices:
- *  GPS1, GPS2,
- *  IMU,
- *  ADC-16,
- *  Relay-16,
- *  SD Card,
- *  SPI to Fc
- * 
- * TODO:
- * What's wrong with IMU? (low priority)
- * MCP startup needs fixing
- * Write packet stuffer to FC
- * Send packet to SD card
- * Write the packet parser and test with FC (harder)
- * Write the relay time commander (hold relay on for X ms)
- * https://github.com/tonton81/SPI_MSTransfer_T4
- * 
- * Transmit: [gps1][gps2][adc][relay state][imu]
- * Receive:  [relay time commands]
+ * Devices: GPS1, GPS2, Backup IMU,
+ *  ADC-16, Relay-16, SD Card, SPI to Fc
  */
 #include "common.h"
 
-// Set up all the peripheral devices
+/* 
+* Set up all the peripheral devices
+*/
 SPISlave_T4 mySPI(0, SPI_8_BITS);
 File dataFile;
 Adafruit_MCP23X17 RelayDriver;  // MCP Object, Uses I2C0, pin 18/19 for SDA/SCL
@@ -37,18 +22,15 @@ spi_command_t spi_command;
 customMessageUnion spi_data_union;
 customMessageUnionFC spi_command_union;
 
-
 // Cycle time, debug flag, and number of cycles for the main loop
-unsigned int  n_cycles_main = 50;
+unsigned int  n_ms_main = 50; // 1/50ms = 20Hz
+unsigned long tstart = 0; // Main Timer Loop
+unsigned long dt_flight_loop = 0;
 uint32_t      error_flag = 0;
-bool          init_relay_states = 1;
 bool          SD_card_valid = 1;
 bool          time_to_write = 1;
 uint32_t      cycle_counter = 0;
 const int     debug_mode =  1;
-uint32_t      _new_fcrx = 0;
-uint8_t  fc_rx_buffer[sizeof(spi_command_t)];
-uint8_t  fc_tx_buffer[sizeof(spi_data_t)];
 uint8_t  _relay_commands[N_COUNT];
 int      _relay_timers[N_COUNT];
 uint16_t _gyro_status;
@@ -57,6 +39,7 @@ float _imu_accel[3];
 int spi_telem_mode = 0;
 const int rx_packet_idx_max = sizeof(b_r);
 int rx_packet_idx = 0;
+int new_rx_packet = 0;
 const int tx_packet_idx_max = sizeof(b_s);
 int tx_packet_idx = 0;
 
@@ -94,39 +77,44 @@ void print_data_to_sd()
   dataFile.println(String(spi_data.checksum));
 }
 
-// SPI Function 
-// TODO: DO THIS CORRECTLY!
+// SPI Rx and Tx Function, gets called by an interrupt service routine
 void flight_computer_spi()
 {
+  // We expect this to be available for the correct number of clock cycles 
+  // from the master
   while( mySPI.available())
   {
     uint32_t startbyte = mySPI.popr();
 
-    // If we are just beginning a transfer
+    // If we are beginning a transfer
     if(spi_telem_mode == 0 && startbyte == 0x69){
-      // Command Packet
+      // Command Packet (signal 69)
       spi_telem_mode = 1;
       rx_packet_idx = 0;
     }
     else if (spi_telem_mode == 0 && startbyte == 0x42){
-      // Telem Request Packet
+      // Telem Request Packet (signal 42)
       spi_telem_mode = 2;
       tx_packet_idx  = 0;
     }
 
     // If the incoming packet is a relay command packet
     if(spi_telem_mode == 1){
-      // Pack spi_command
+      // Pack spi_command via the custom message union
       spi_command_union.bytes[rx_packet_idx] = startbyte;
       rx_packet_idx ++;
 
+      // Convert the message to the struct. The reset the telem mode, and the index.
       if(rx_packet_idx == rx_packet_idx_max){
         spi_command = spi_command_union.message;
+        new_rx_packet = 1;
         spi_telem_mode = 0;
         rx_packet_idx = 0;
       }
     }
-    // If we've requested telemetry. Not sure if this is right....
+    // If the FC has requested telem, push out the struct
+    // byte by byte until the end. The FC should command more bytes
+    // Than required
     if(spi_telem_mode == 2){
       // Push out telemetry byte by byte
       mySPI.pushr(spi_data_union.bytes[tx_packet_idx]);
@@ -143,9 +131,9 @@ void flight_computer_spi()
 
 /* 
  * This custom version of delay() ensures that the gps object
- * is being "fed".
+ * is being "fed". I'm being lazy by making two of them.
 */
-void smartDelayGPS1(unsigned long ms)
+void smartDelayGPS(unsigned long ms)
 {
   unsigned long start = millis();
   do 
@@ -265,37 +253,13 @@ void setup()
 // Receive: Relay State Commands
 // Other: Store Telemetry on SD Card at a lower rate.
 void flight_loop(){
-
-  /* Read the flight computer buffer. If there is a fresh command packet, reset the timers
-   * only update the timers in the case we get an updated packet from FC 
-   * this should be every 250ms or so.
-   */
-  // if(_new_fcrx){
-  //   populate_fc_rx_data();
-  //   // kyle: fire interrupts for triggering valves
-  //   for (uint8_t i = 0; i < N_COUNT; i++){
-  //     _relay_timers[i]   = spi_command.relay_times_desired_ms[i];
-  //     _relay_commands[i] = spi_command.relay_states_desired[i];
-  //   }
-  // }
-
-  /* Now activate relays based on those commands. 
-   * _relay_commands is a little redundant but offers extra masking 
-   * ability for any flight code that wants to act as an override
-   */
-  for (uint8_t i = 0; i < N_COUNT; i++){
-    if(_relay_timers[i] > 0 && _relay_commands[i] == 1){
-      // Low means relays are active.
-      RelayDriver.digitalWrite(i, LOW);
-      spi_data.relay_states[i] = HIGH;
-      _relay_timers[i] -= n_cycles_main;
-    }
-    else{
-      // High means relays aren't activated.
-      RelayDriver.digitalWrite(i, HIGH);
-      spi_data.relay_states[i] = LOW;
-      _relay_timers[i] = 0; 
-    }
+  // If we got a new command packet, we should stuff the timers
+  if (new_rx_packet){
+    for (uint8_t i = 0; i < N_COUNT; i++){
+      _relay_commands[i] = spi_command.relay_states_desired[i];
+      _relay_timers[i] = spi_command.relay_times_desired_ms[i];
+      }
+    new_rx_packet = 0;
   }
 
   /* 
@@ -322,13 +286,13 @@ void flight_loop(){
    * The Teensy ADC is measuring 5V at the top end.
   */
   for (int i = 0; i < N_COUNT; i++) {
-    adc_mux.channel(i); delay(1);
+    adc_mux.channel(i);
+    delay(1);
     spi_data.adc[i] = analogRead(adc_common_input);
   }
 
   // Populate the telemetry struct with GPS1 and GPS2 data
   gps_populate_telem_struct(spi_data, gps1, gps2);
-  // tx_data_to_fc(spi_data);
 
   // Pack the data union
   spi_data_union.message = spi_data;
@@ -338,64 +302,78 @@ void flight_loop(){
     print_data_to_sd();
     dataFile.flush();
   }
+
+  // smartDelayGPS1(0);
+  // smartDelayGPS2(0);
+
+  // Print out each second
+  if(cycle_counter%50 == 0){
+    Serial.print("Running Flight Loop, Cycle: ");
+    Serial.println(cycle_counter);
+  } 
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // DEBUG THE FLIGHT ROUTINE, RUN SLOWER
 void debug_loop()
 {
-  // Make the main loop much slower
-  n_cycles_main = 1000;
+  // Make the main loop much slower, 1s each
+  // n_ms_main = 1000;
 
   /*
-   * PRINT OUT A BUNCH OF SHIT
+   * PRINT OUT A BUNCH OF SHIT Once a second
   */
-  Serial.println(F("----------------------------------------------------------------------------------------"));
-  Serial.println(F("nsats-hdop-latitude----longitude--age--[date----------------]---alt----spd--crse-fchksum"));
-  gps_debug_to_console(gps1);
-  gps_debug_to_console(gps2);
+  if(cycle_counter%50 == 0){
 
-  // Read and Print off IMU Packet
-  imu.readSensor();
-  Serial.print("temperature: "); Serial.print(imu.getTemp());
-  Serial.print(" SN: "); Serial.print(imu.getSerialNumber());
-  Serial.print(" Status: "); Serial.print(imu.getStatus());
-  Serial.print(" wx: ");  Serial.print(imu.getGyroX());
-  Serial.print(" wy: "); Serial.print(imu.getGyroY());
-  Serial.print(" wz: "); Serial.print(imu.getGyroZ());
-  Serial.print(" ax: "); Serial.print(imu.getAccelX());
-  Serial.print(" ay: "); Serial.print(imu.getAccelY());
-  Serial.print(" az: "); Serial.print(imu.getAccelZ());
-  Serial.println();
+    Serial.println(F("----------------------------------------------------------------------------------------"));
+    Serial.println(F("nsats-hdop-latitude----longitude--age--[date----------------]---alt----spd--crse-fchksum"));
+    gps_debug_to_console(gps1);
+    gps_debug_to_console(gps2);
 
-  // Check all mux input lines and print them off
-  Serial.print("All ADC Lines From Mux: ");
-  for (int i = 0; i < N_COUNT; i++) {
-    adc_mux.channel(i); delay(5);
-    Serial.print((analogRead(adc_common_input)*5.0)/1023.0); Serial.print(" / ");
+    // Read and Print off IMU Packet
+    imu.readSensor();
+    Serial.print("temperature: "); Serial.print(imu.getTemp());
+    Serial.print(" SN: "); Serial.print(imu.getSerialNumber());
+    Serial.print(" Status: "); Serial.print(imu.getStatus());
+    Serial.print(" wx: ");  Serial.print(imu.getGyroX());
+    Serial.print(" wy: "); Serial.print(imu.getGyroY());
+    Serial.print(" wz: "); Serial.print(imu.getGyroZ());
+    Serial.print(" ax: "); Serial.print(imu.getAccelX());
+    Serial.print(" ay: "); Serial.print(imu.getAccelY());
+    Serial.print(" az: "); Serial.print(imu.getAccelZ());
+    Serial.println();
+
+    // Check all mux input lines and print them off
+    Serial.print("All ADC Lines From Mux: ");
+    for (int i = 0; i < N_COUNT; i++) {
+      Serial.print((spi_data.adc[i]*5.0)/1023.0); Serial.print(" / ");
+    }
+    Serial.println();
+
+    /* RUN THE MAIN LOOP, BUT SET UP SOME INITIAL CONDITIONS ETC
+    * Every 5 seconds, command relay 5 to 2seconds on time
+    */
+    if(cycle_counter%250 == 0){
+      _relay_timers[5]  = 1000;   _relay_commands[5] = 1;
+      _relay_timers[6]  = 2000;   _relay_commands[6] = 1;
+      _relay_timers[7]  = 2000;   _relay_commands[7] = 1;
+      _relay_timers[11] = 2100;  _relay_commands[11] = 1;
+      _relay_timers[12] = 2200;  _relay_commands[12] = 1;
+      _relay_timers[13] = 2300;  _relay_commands[13] = 1;
+    }
+    Serial.print("Flight Loop takes this long to run (ms): ");
+    Serial.println(dt_flight_loop);
   }
-  Serial.println();
-
-  /* RUN THE MAIN LOOP, BUT SET UP SOME INITIAL CONDITIONS ETC
-   * 
-   */
   unsigned long start_flight = millis();
-  if(cycle_counter%5 == 0) _relay_timers[5] = 2000;
-  _relay_commands[5] = 1;
-  
   flight_loop();
-  Serial.print("Flight Loop takes this long to run (ms): ");
-  Serial.println(millis() - start_flight);
+  dt_flight_loop = millis() - start_flight;
 }
 
 
 void loop()
 {
-  // Loop time counter
-  uint32_t tstart = 0;
-
-  // Execution Loop
-  if (millis() - tstart >= n_cycles_main )
+  // If time span is greater than n_ms_main, run again. 
+  if (millis() - tstart >= n_ms_main )
   {
     // Reset Timer
     tstart = millis();
@@ -403,27 +381,37 @@ void loop()
     spi_data.counter = cycle_counter;
 
     // Write to SD card every other cycle.
-    if(cycle_counter%2 == 0) time_to_write = 1;
+    time_to_write = cycle_counter%5 == 0 ? 1 : 0;
 
     // FLIGHT LOOP CODE
     if (!debug_mode)
     {
-      /* 
-       * Give Each GPS time to update a packet if a new solution is found
-       * They update at ~171ms interval anyway. Updates dont happen when Age is 0 btw.
-      */
+      // Write Every 100ms
       flight_loop();
-      smartDelayGPS1(10);
-      smartDelayGPS2(10);
     }
     else{
-      // Debug, write to SD card each time.
-      time_to_write = 1;
+      // Fake Some Commands, and print more data to console
       debug_loop();
     }    
   }
 
-  // Keep the buffers fed
-  smartDelayGPS1(0);
-  smartDelayGPS2(0);
+// TODO make this work properly.
+  /* Activate relays based on FC commands. 
+   * _relay_commands is a little redundant but offers extra masking 
+   * ability for any flight code that wants to act as an override (?)
+   */
+  for (uint8_t i = 0; i < N_COUNT; i++){
+    if(_relay_timers[i] > 0 && _relay_commands[i] == 1){
+      // Low means relays are active.
+      RelayDriver.digitalWrite(i, LOW);
+      spi_data.relay_states[i] = HIGH;
+      _relay_timers[i] -= n_ms_main;
+    }
+    else{
+      // High means relays aren't activated.
+      RelayDriver.digitalWrite(i, HIGH);
+      spi_data.relay_states[i] = LOW;
+      _relay_timers[i] = 0; 
+    }
+  }
 }

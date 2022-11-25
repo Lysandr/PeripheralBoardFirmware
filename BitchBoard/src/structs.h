@@ -1,14 +1,14 @@
 #ifndef STRUCTS_H
 #define STRUCTS_H
-// Recall
-// Devices: GPS1, GPS2, IMU, ADC-16, Relay-16, SD Card, SPI to Fc
+// Recall Devices: GPS1, GPS2, IMU, ADC-16, Relay-16, SD Card, SPI to Fc
 
+// See more data on this here: https://blog.veles.rs/sending-struct-via-spi-between-arduino-nano-and-arduino-mega-2560/
 // Transmitted to FC
 typedef struct spi_data_t
 {
     uint32_t    flags[2];
-    uint32_t    num_sats[2]; // number of GPS satellites in view 2x
-    double      hdop[2]; // horizontal diliution of precision 2x
+    uint32_t    num_sats[2];  // number of GPS satellites in view 2x
+    double      hdop[2];      // horizontal diliution of precision 2x
     double      lat[2];
     double      lng[2];
     uint32_t    age[2];
