@@ -23,7 +23,7 @@ customMessageUnion spi_data_union;
 customMessageUnionFC spi_command_union;
 
 // Cycle time, debug flag, and number of cycles for the main loop
-unsigned int  n_ms_main = 50; // 1/50ms = 20Hz
+unsigned int  n_ms_main = 100; // 1/100ms = 10Hz
 unsigned long tstart = 0; // Main Timer Loop
 unsigned long dt_flight_loop = 0;
 uint32_t      error_flag = 0;
@@ -77,7 +77,10 @@ void print_data_to_sd()
   dataFile.println(String(spi_data.checksum));
 }
 
-// SPI Rx and Tx Function, gets called by an interrupt service routine
+/*
+ * SPI Rx and Tx Function
+ * gets called by an interrupt service routine.
+*/
 void flight_computer_spi()
 {
   // We expect this to be available for the correct number of clock cycles 
@@ -248,16 +251,16 @@ void setup()
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// Objective: Rx/Tx updates to/from FC at 50Hz.
+// Objective: Rx/Tx updates to/from FC at N-Hz.
 // Send: GPS1, GPS2, IMU, ADC states, Relay States
 // Receive: Relay State Commands
 // Other: Store Telemetry on SD Card at a lower rate.
 void flight_loop(){
-  // If we got a new command packet, we should stuff the timers
+  // If we got a new command packet, we should stuff the timers!
   if (new_rx_packet){
     for (uint8_t i = 0; i < N_COUNT; i++){
       _relay_commands[i] = spi_command.relay_states_desired[i];
-      _relay_timers[i] = spi_command.relay_times_desired_ms[i];
+      _relay_timers[i]   = spi_command.relay_times_desired_ms[i];
       }
     new_rx_packet = 0;
   }
@@ -282,7 +285,7 @@ void flight_loop(){
   spi_data.flags[1] = (uint32_t)_gyro_status;
 
   /* Now get ADC data (does this need a delay? 16ms)
-   * Configure the mux address lines via channl(i)
+   * Configure the mux address lines via channel(i)
    * The Teensy ADC is measuring 5V at the top end.
   */
   for (int i = 0; i < N_COUNT; i++) {
@@ -303,11 +306,14 @@ void flight_loop(){
     dataFile.flush();
   }
 
+  // TODO: include?
   // smartDelayGPS1(0);
   // smartDelayGPS2(0);
 
-  // Print out each second
-  if(cycle_counter%50 == 0){
+  /*
+   * Print cycle count each second (hard coded for 100ms loops)
+  */
+  if(cycle_counter%10 == 0){
     Serial.print("Running Flight Loop, Cycle: ");
     Serial.println(cycle_counter);
   } 
@@ -321,9 +327,9 @@ void debug_loop()
   // n_ms_main = 1000;
 
   /*
-   * PRINT OUT A BUNCH OF SHIT Once a second
+   * Print out lots of things each second
   */
-  if(cycle_counter%50 == 0){
+  if(cycle_counter%10 == 0){
 
     Serial.println(F("----------------------------------------------------------------------------------------"));
     Serial.println(F("nsats-hdop-latitude----longitude--age--[date----------------]---alt----spd--crse-fchksum"));
@@ -352,6 +358,7 @@ void debug_loop()
 
     /* RUN THE MAIN LOOP, BUT SET UP SOME INITIAL CONDITIONS ETC
     * Every 5 seconds, command relay 5 to 2seconds on time
+    * just as open loop test of each of valve commanding
     */
     if(cycle_counter%250 == 0){
       _relay_timers[5]  = 1000;   _relay_commands[5] = 1;
@@ -364,6 +371,11 @@ void debug_loop()
     Serial.print("Flight Loop takes this long to run (ms): ");
     Serial.println(dt_flight_loop);
   }
+
+  /*
+   * Run the nominal flight loop and calculate how long it takes
+   * to execute. Store for printing on the next loop.
+  */
   unsigned long start_flight = millis();
   flight_loop();
   dt_flight_loop = millis() - start_flight;
@@ -377,20 +389,18 @@ void loop()
   {
     // Reset Timer
     tstart = millis();
-    cycle_counter++;
+    cycle_counter++; // will take 13 years to overflow
     spi_data.counter = cycle_counter;
 
-    // Write to SD card every other cycle.
+    // Write to SD card every so often.
     time_to_write = cycle_counter%5 == 0 ? 1 : 0;
 
     // FLIGHT LOOP CODE
-    if (!debug_mode)
-    {
-      // Write Every 100ms
+    if (!debug_mode){
       flight_loop();
     }
     else{
-      // Fake Some Commands, and print more data to console
+      // Fake Some Commands,s and print more data to console
       debug_loop();
     }    
   }
@@ -405,13 +415,13 @@ void loop()
       // Low means relays are active.
       RelayDriver.digitalWrite(i, LOW);
       spi_data.relay_states[i] = HIGH;
-      _relay_timers[i] -= n_ms_main;
+      _relay_timers[i] -= n_ms_main; // Decrement for the time the valve is on
     }
     else{
       // High means relays aren't activated.
       RelayDriver.digitalWrite(i, HIGH);
       spi_data.relay_states[i] = LOW;
-      _relay_timers[i] = 0; 
+      _relay_timers[i] = 0;  //Set the timer values to zero
     }
   }
 }
