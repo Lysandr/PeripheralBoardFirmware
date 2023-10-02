@@ -12,10 +12,10 @@ typedef struct spi_data_t
     double      lat[2];
     double      lng[2];
     uint32_t    age[2];
-    char        date1[32];
-    char        time1[32];
-    char        date2[32];
-    char        time2[32];
+    char        date1[10];
+    char        time1[10];
+    char        date2[8];
+    char        time2[8];
     double      altitude_m[2];
     double      speed_mps[2];
     uint32_t    failedChecksum[2];
@@ -23,7 +23,7 @@ typedef struct spi_data_t
     float       imu_a[3];
     float       imu_temp;
     int         relay_states[16];
-    int         adc[16];
+    double      adc[16];
     uint32_t    counter;
     int32_t     checksum;
 } b_s;

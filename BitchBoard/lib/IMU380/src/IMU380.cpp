@@ -192,7 +192,7 @@ int IMU380::readSensor() {
 
     // Start burst mode
     _spi->transfer16(((uint16_t) BURST_MODE) << 8);
-    _status = _spi->transfer16(0x0000);
+    _status= _spi->transfer16(0x0000);
     _gxadu = _spi->transfer16(0x0000);
     _gyadu = _spi->transfer16(0x0000);
     _gzadu = _spi->transfer16(0x0000);

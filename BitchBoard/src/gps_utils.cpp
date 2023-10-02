@@ -95,27 +95,29 @@ void gps_populate_telem_struct(spi_data_t& spi_data, TinyGPSPlus gps1, TinyGPSPl
   spi_data.hdop[1]  = gps2.hdop.hdop() * gps2.hdop.isValid();
   spi_data.lat[0]   = gps1.location.lat() * gps1.location.isValid();
   spi_data.lat[1]   = gps2.location.lat() * gps2.location.isValid();
+  spi_data.lng[0]   = gps1.location.lng() * gps1.location.isValid();
+  spi_data.lng[1]   = gps2.location.lng() * gps2.location.isValid();
   spi_data.age[0]   = gps1.location.age() * gps1.location.isValid();
   spi_data.age[1]   = gps2.location.age() * gps2.location.isValid();
   if(gps1.date.isValid()){
-    char sz[32];
+    char sz[10];
     sprintf(sz, "%02d/%02d/%02d ", gps1.date.month(), gps1.date.day(), gps1.date.year());
-    for (uint8_t i = 0; i < 32; i++) spi_data.date1[i] = sz[i]; 
+    for (uint8_t i = 0; i < 10; i++) spi_data.date1[i] = sz[i]; 
   }
   if(gps2.date.isValid()){
-    char sz[32];
+    char sz[10];
     sprintf(sz, "%02d/%02d/%02d ", gps2.date.month(), gps2.date.day(), gps2.date.year());
-    for (uint8_t i = 0; i < 32; i++) spi_data.date2[i] = sz[i]; 
+    for (uint8_t i = 0; i < 10; i++) spi_data.date2[i] = sz[i]; 
   }
   if(gps1.time.isValid()){
-    char sz[32];
+    char sz[8];
     sprintf(sz, "%02d:%02d:%02d ", gps1.time.hour(), gps1.time.minute(), gps1.time.second());
-    for (uint8_t i = 0; i < 32; i++) spi_data.time1[i] = sz[i]; 
+    for (uint8_t i = 0; i < 8; i++) spi_data.time1[i] = sz[i]; 
   }
   if(gps2.time.isValid()){
-    char sz[32];
+    char sz[8];
     sprintf(sz, "%02d:%02d:%02d ", gps2.time.hour(), gps2.time.minute(), gps2.time.second());
-    for (uint8_t i = 0; i < 32; i++) spi_data.time2[i] = sz[i]; 
+    for (uint8_t i = 0; i < 8; i++) spi_data.time2[i] = sz[i]; 
   }
   spi_data.altitude_m[0] = gps1.altitude.meters() * gps1.altitude.isValid();
   spi_data.altitude_m[1] = gps2.altitude.meters() * gps2.altitude.isValid();

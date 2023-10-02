@@ -71,7 +71,7 @@ class IMU380 {
         // Data scale factors
         float _accelScale = 9.807f/4000.0f; // ADU/g
         float _gyroScale;
-        const float _tempScale = 0.7311f; // deg C/ADU
+        const float _tempScale = 0.7311; // deg C/ADU
         const float _tempOffset = 31.0f;
 
         // Bias and scale corrections
@@ -102,6 +102,7 @@ class IMU380 {
         const uint8_t RATE_TEMP = 0x16;
         const uint8_t BOARD_TEMP = 0x18;
 
+        //https://www.digikey.jp/htmldatasheets/production/2108853/0/0/1/imu380za-200-manual.html
         const uint8_t STATUS = 0x3C;
         const uint8_t BURST_MODE = 0x3E;
         const uint8_t MANUF_CODE = 0x52;
