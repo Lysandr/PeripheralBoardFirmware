@@ -1,4 +1,4 @@
-#define DEBUG 1    // SET TO 0 OUT TO REMOVE TRACES
+#define DEBUG 0    // SET TO 0 OUT TO REMOVE TRACES
 
 /* Padraig Lysandrou April 2022
  * "Everything Else Board" or "Bitchboard" Firmware
@@ -24,7 +24,7 @@ IntervalTimer ParseAndPackTimer;
 IntervalTimer SDCardWriteTimer;
 
 // Global Telemetry Structs
-spi_data_t          spi_data;
+spi_data_t          spi_data; // = {1};
 spi_command_t       spi_command;
 customMessageUnion  spi_data_union;
 customMessageUnionFC spi_command_union;
@@ -87,50 +87,69 @@ void flight_computer_spi()
 {
   // We expect this to be available for the correct number of clock cycles 
   // from the master
-  while(mySPI.available())
-  {
-    uint32_t startbyte = mySPI.popr();
+  uint32_t i = 0;
+  /*
+  if (mySPI.active() == 0) {
+    D_println("SPI Slave Not Active.");
+    return;
+  }
+  */
+  while(mySPI.active()) {
+    if (mySPI.available()) {
+      uint32_t startbyte = mySPI.popr();
 
-    // If we are beginning a transfer
-    if(spi_telem_mode == 0 && startbyte == 0x69){
-      // Command Packet (signal 69)
-      spi_telem_mode = 1;
-      rx_packet_idx = 0;
-    }
-    else if (spi_telem_mode == 0 && startbyte == 0x42){
-      // Telem Request Packet (signal 42)
-      spi_telem_mode = 2;
-      tx_packet_idx  = 0;
-    }
-
-    // If the incoming packet is a relay command packet
-    if(spi_telem_mode == 1){
-      // Pack spi_command via the custom message union
-      spi_command_union.bytes[rx_packet_idx] = startbyte;
-      rx_packet_idx ++;
-
-      // Convert the message to the struct. The reset the telem mode, and the index.
-      if(rx_packet_idx == rx_packet_idx_max){
-        spi_command = spi_command_union.message;
-        new_rx_packet = 1;
-        spi_telem_mode = 0;
-        rx_packet_idx = 0;
+      if (i == 0)
+      {
+        // If the first byte is not a start byte, we're out of sync
+        switch (startbyte) {
+          case 0x69:
+            spi_telem_mode = 1;
+            rx_packet_idx = 0;
+            break;
+          case 0x42:
+            spi_telem_mode = 2;
+            tx_packet_idx = 0;
+            break;
+          default:
+            spi_telem_mode = 0;
+            rx_packet_idx = 0;
+            tx_packet_idx = 0;
+            break;
+        }
       }
-    }
-    // If the FC has requested telem, push out the struct
-    // byte by byte until the end. The FC should command more bytes
-    // Than required
-    if(spi_telem_mode == 2){
-      // Push out telemetry byte by byte
-      mySPI.pushr(spi_data_union.bytes[tx_packet_idx]);
-      tx_packet_idx ++;
 
-      // If we have transmitted out all the packets then we're done!
-      if(tx_packet_idx == tx_packet_idx_max){
-        spi_telem_mode = 0;
-        tx_packet_idx = 0;
+      // If the incoming packet is a relay command packet
+      if(spi_telem_mode == 1){
+        // Pack spi_command via the custom message union
+        spi_command_union.bytes[rx_packet_idx] = startbyte;
+        rx_packet_idx ++;
+
+        // Convert the message to the struct. The reset the telem mode, and the index.
+        if(rx_packet_idx == rx_packet_idx_max){
+          spi_command = spi_command_union.message;
+          new_rx_packet = 1;
+          spi_telem_mode = 0;
+          rx_packet_idx = 0;
+        }
       }
+      // If the FC has requested telem, push out the struct
+      // byte by byte until the end. The FC should command more bytes
+      // Than required
+      if(spi_telem_mode == 2){
+        // Push out telemetry byte by byte
+        mySPI.pushr(spi_data_union.bytes[tx_packet_idx]);
+        tx_packet_idx ++;
+
+        // If we have transmitted out all the packets then we're done!
+        if(tx_packet_idx == tx_packet_idx_max){
+          spi_telem_mode = 0;
+          tx_packet_idx = 0;
+        }
+      }
+      i++;
     }
+
+
   }
 }
 
@@ -203,7 +222,9 @@ void flight_loop()
   gps_populate_telem_struct(spi_data, gps1, gps2);
 
   // Pack the data union
+  // strcpy(spi_data.date1, "HELLLD\0");
   spi_data_union.message = spi_data;
+  // memcpy(&(spi_data_union.message), &(spi_data), sizeof(b_s));
 
 
     // If we got a new command packet, we should stuff the timers!
@@ -297,7 +318,7 @@ void setup()
   // fc_spi.begin();
   mySPI.onReceive(flight_computer_spi);
   mySPI.begin();
-  mySPI.swapPins();
+  mySPI.swapPins(true); // false);
   D_println("FC SPI Line Opened.");
 
   // Configure the IMU with the following (TBD!)
