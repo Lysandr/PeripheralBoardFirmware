@@ -85,6 +85,7 @@ void print_data_to_sd()
 */
 void flight_computer_spi()
 {
+  // NOTE: cli() sei() / volatiles!
   // We expect this to be available for the correct number of clock cycles 
   // from the master
   uint32_t recv_bytes_index = 0;
@@ -182,6 +183,7 @@ void flight_loop()
    * Pull imu data, and populate telem struct
    */
   imu.readSensor();
+  // FIXME: only update if valid (?)
   _gyro_status  = imu.getStatus();
   spi_data.imu_w[0] = imu.getGyroX();
   spi_data.imu_w[1] = imu.getGyroY();
@@ -203,7 +205,7 @@ void flight_loop()
     adc_mux.channel(i);
     delay(1);
     // Need to account for the voltage divider on the mux (1/2)
-    // spi_data.adc[i] = ((double)analogRead(adc_common_input)/1023.0) * 3.3 * 2.0;
+    spi_data.adc[i] = ((double)analogRead(adc_common_input)/1023.0) * 3.3 * 2.0;
   }
 
   // Keep buffers fed.
