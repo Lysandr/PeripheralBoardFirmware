@@ -2,6 +2,12 @@
 #define STRUCTS_H
 // Recall Devices: GPS1, GPS2, IMU, ADC-16, Relay-16, SD Card, SPI to Fc
 
+enum SPI_TELEM_MODE: uint8_t {
+  SPI_XFER_INVALID = 0x00,
+  SPI_XFER_COMMAND = 0x69,
+  SPI_XFER_TELEM = 0x42
+};
+
 // See more data on this here: https://blog.veles.rs/sending-struct-via-spi-between-arduino-nano-and-arduino-mega-2560/
 // Transmitted to FC
 typedef struct __attribute__((packed)) spi_data_t
@@ -22,7 +28,7 @@ typedef struct __attribute__((packed)) spi_data_t
     float       imu_w[3];
     float       imu_a[3];
     float       imu_temp;
-    int         relay_states[16];
+    uint32_t         relay_states[16];
     double      adc[16];
     uint32_t    counter;
     int32_t     checksum;

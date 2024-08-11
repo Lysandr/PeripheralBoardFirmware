@@ -24,10 +24,10 @@ IntervalTimer ParseAndPackTimer;
 IntervalTimer SDCardWriteTimer;
 
 // Global Telemetry Structs
-spi_data_t          spi_data;
-spi_command_t       spi_command;
-customMessageUnion  spi_data_union;
-customMessageUnionFC spi_command_union;
+spi_data_t          spi_data = {0};
+spi_command_t       spi_command = {0};
+customMessageUnion  spi_data_union = {0};
+customMessageUnionFC spi_command_union = {0};
 
 // Configure filename
 char file_name[80] = "bitchboard_telemetry";
@@ -40,12 +40,12 @@ bool      SD_card_valid = 0;
 uint8_t   _relay_commands[N_COUNT];
 int       _relay_timers[N_COUNT];
 uint16_t  _gyro_status;
-int       spi_telem_mode = 0;
+SPI_TELEM_MODE       spi_telem_mode = 0;
 const int rx_packet_idx_max = sizeof(b_r);
 int       rx_packet_idx = 0;
 int       new_rx_packet = 0;
 const int tx_packet_idx_max = sizeof(b_s);
-int       tx_packet_idx = 0;
+uint32_t       tx_packet_idx = 0;
 
 void print_data_to_sd()
 {
@@ -87,51 +87,62 @@ void flight_computer_spi()
 {
   // We expect this to be available for the correct number of clock cycles 
   // from the master
-  while(mySPI.available())
+  uint32_t recv_bytes_index = 0;
+  uint32_t tx_bytes_index = 0;
+  
+
+  while(mySPI.active())
   {
-    uint32_t startbyte = mySPI.popr();
-
-    // If we are beginning a transfer
-    if(spi_telem_mode == 0 && startbyte == 0x69){
-      // Command Packet (signal 69)
-      spi_telem_mode = 1;
-      rx_packet_idx = 0;
-    }
-    else if (spi_telem_mode == 0 && startbyte == 0x42){
-      // Telem Request Packet (signal 42)
-      spi_telem_mode = 2;
-      tx_packet_idx  = 0;
-    }
-
-    // If the incoming packet is a relay command packet
-    if(spi_telem_mode == 1){
-      // Pack spi_command via the custom message union
-      spi_command_union.bytes[rx_packet_idx] = startbyte;
-      rx_packet_idx ++;
-
-      // Convert the message to the struct. The reset the telem mode, and the index.
-      if(rx_packet_idx == rx_packet_idx_max){
-        spi_command = spi_command_union.message;
-        new_rx_packet = 1;
-        spi_telem_mode = 0;
-        rx_packet_idx = 0;
+    if (mySPI.available())
+    {
+      uint32_t startbyte = mySPI.popr();
+      // If we are beginning a transfer
+      if (recv_bytes_index == 0) { //SPI_XFER_INVALID){
+        switch (startbyte){
+          case SPI_XFER_COMMAND:
+            spi_telem_mode = SPI_XFER_COMMAND;
+            recv_bytes_index = 0;
+            break;
+          case SPI_XFER_TELEM:
+            spi_telem_mode = SPI_XFER_TELEM;
+            recv_bytes_index = 0;
+            break;
+          default:
+            spi_telem_mode = SPI_XFER_INVALID;
+            recv_bytes_index = 0;
+            return; // return if invalid packet (?)
+        }
       }
-    }
-    // If the FC has requested telem, push out the struct
-    // byte by byte until the end. The FC should command more bytes
-    // Than required
-    if(spi_telem_mode == 2){
-      // Push out telemetry byte by byte
-      mySPI.pushr(spi_data_union.bytes[tx_packet_idx]);
-      tx_packet_idx ++;
+      recv_bytes_index++;
+    
+      // If the incoming packet is a relay command packet
+      if (spi_telem_mode == SPI_XFER_TELEM){
+        mySPI.pushr(spi_data_union.bytes[tx_bytes_index]);
+        tx_bytes_index++;
 
-      // If we have transmitted out all the packets then we're done!
-      if(tx_packet_idx == tx_packet_idx_max){
-        spi_telem_mode = 0;
-        tx_packet_idx = 0;
+        if (tx_bytes_index == sizeof(spi_data_t)) {
+          spi_telem_mode = SPI_XFER_INVALID;
+          tx_packet_idx++;
+          return;
+        }
       }
+
+      // FIXME: only copy the command struct if packet is valid and complete.
+      if (spi_telem_mode == SPI_XFER_COMMAND){
+        spi_command_union.bytes[recv_bytes_index] = startbyte;
+
+        if (recv_bytes_index == sizeof(spi_command_t)){
+          spi_command = spi_command_union.message;
+          new_rx_packet = 1;
+          spi_telem_mode = SPI_XFER_INVALID;
+          recv_bytes_index = 0;
+          tx_packet_idx++; // FIXME: move this to an rx command counter...
+          return;
+        }
+      }
+
     }
-  }
+  };
 }
 
 /* 
@@ -165,7 +176,7 @@ void smartDelayGPS2(unsigned long ms)
 // Other: Store Telemetry on SD Card at a lower rate.
 void flight_loop()
 {
-  spi_data.counter++;
+  spi_data.counter = tx_packet_idx; // ++;
 
   /* 
    * Pull imu data, and populate telem struct
@@ -192,7 +203,7 @@ void flight_loop()
     adc_mux.channel(i);
     delay(1);
     // Need to account for the voltage divider on the mux (1/2)
-    spi_data.adc[i] = ((double)analogRead(adc_common_input)/1023.0) * 3.3 * 2.0;
+    // spi_data.adc[i] = ((double)analogRead(adc_common_input)/1023.0) * 3.3 * 2.0;
   }
 
   // Keep buffers fed.
